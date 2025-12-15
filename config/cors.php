@@ -19,7 +19,7 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['https://tpgo.netlify.app'],
+    'allowed_origins' => ['https://toplago.com'],
 
     'allowed_origins_patterns' => [],
 
