@@ -9,10 +9,10 @@ use Illuminate\Support\Facades\Log;
 class TripController extends Controller
 {
     private $models = [
-        'gemini-2.0-flash',
+        
         'gemini-2.5-flash',
         'gemini-2.5-flash-lite',
-        'gemini-2.0-flash-lite'
+        
     ];
 
     private function getApiKeys()
