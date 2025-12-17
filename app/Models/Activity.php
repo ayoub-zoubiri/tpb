@@ -14,6 +14,8 @@ class Activity extends Model
         'time_of_day',
         'description',
         'location',
+        'latitude',
+        'longitude',
     ];
 
     public function dayPlan()
