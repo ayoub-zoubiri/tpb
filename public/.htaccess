@@ -9,6 +9,20 @@
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
+    <IfModule mod_headers.c>
+        # SECURITY HEADERS
+        Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Header always set X-Frame-Options "SAMEORIGIN"
+        Header always set X-Content-Type-Options "nosniff"
+        Header always set Referrer-Policy "strict-origin-when-cross-origin"
+        
+        # CORS HEADERS
+        Header always set Access-Control-Allow-Origin "https://toplago.com"
+        Header always set Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, X-CSRF-TOKEN, X-XSRF-TOKEN"
+        Header always set Access-Control-Allow-Credentials "true"
+    </IfModule>
+
     # Redirect Trailing Slashes If Not A Folder...
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteCond %{REQUEST_URI} (.+)/$
