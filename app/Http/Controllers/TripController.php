@@ -70,12 +70,72 @@ class TripController extends Controller
         return response()->json(['message' => 'Trip deleted successfully']);
     }
 
-    private function getRealCoordinates($location, $destination) {
+    private function getTripAdvisorData($query) {
+        $apiKey = env('TRIPADVISOR_API_KEY', '83702C78952B4CA2B80D94F58C4A905C'); 
+        if (!$apiKey) return null;
+
         try {
-            // Respect Nominatim Usage Policy: https://operations.osmfoundation.org/policies/nominatim/
-            // 1. Identify User-Agent
-            // 2. Limit frequency (we will serialize calls naturally in the loop)
-            
+            // TripAdvisor Location Search
+            $response = Http::withHeaders([
+                'accept' => 'application/json',
+            ])->get("https://api.content.tripadvisor.com/api/v1/location/search", [
+                'key' => $apiKey,
+                'searchQuery' => $query,
+                'language' => 'en'
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                if (!empty($data['data'])) {
+                    // Get the first (best) match
+                    $place = $data['data'][0];
+                    
+                    // We might need to fetch details to get lat/long if not in search response
+                    // Note: Basic Search often creates minimal data. 
+                    // Let's assume we proceed if we have an ID, but for lat/long we might need a second call 
+                    // OR we accept just the name verification and use Nominatim for coords if TA lacks them.
+                    
+                    // Actually, let's use the 'details' endpoint if we have an ID to be sure, 
+                    // but to save API calls (limit), let's check what search returns. 
+                    // Search usually doesn't return lat/long in the list in v1. 
+                    // So we do: Search -> Get ID -> Get Details (for Geoloc).
+                    
+                    $locationId = $place['location_id'];
+                    $detailsResponse = Http::withHeaders(['accept' => 'application/json'])
+                        ->get("https://api.content.tripadvisor.com/api/v1/location/{$locationId}/details", [
+                            'key' => $apiKey,
+                            'language' => 'en',
+                            'currency' => 'USD'
+                        ]);
+                        
+                    if ($detailsResponse->successful()) {
+                        $details = $detailsResponse->json();
+                        return [
+                            'name' => $details['name'] ?? $place['name'],
+                            'lat' => $details['latitude'] ?? null,
+                            'lon' => $details['longitude'] ?? null,
+                            'rating' => $details['rating'] ?? null,
+                            'url' => $details['web_url'] ?? null
+                        ];
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            Log::warning("TripAdvisor lookup failed for {$query}: " . $e->getMessage());
+        }
+        return null;
+    }
+
+    private function getRealCoordinates($location, $destination) {
+        // Try TripAdvisor First (It's the requested "Real Place" source)
+        $taData = $this->getTripAdvisorData("{$location} in {$destination}");
+        
+        if ($taData && $taData['lat'] && $taData['lon']) {
+            return $taData; // Returns ['lat', 'lon', 'name', ...]
+        }
+
+        // Fallback to Nominatim (OpenStreetMap) if TripAdvisor fails or has no coords
+        try {
             $query = urlencode("{$location}, {$destination}");
             $url = "https://nominatim.openstreetmap.org/search?q={$query}&format=json&limit=1";
 
@@ -88,12 +148,13 @@ class TripController extends Controller
                 if (!empty($data) && isset($data[0]['lat']) && isset($data[0]['lon'])) {
                     return [
                         'lat' => $data[0]['lat'],
-                        'lon' => $data[0]['lon']
+                        'lon' => $data[0]['lon'],
+                        'name' => null // Keep original name if using fallback
                     ];
                 }
             }
         } catch (\Exception $e) {
-            Log::warning("Geocoding failed for {$location}: " . $e->getMessage());
+            Log::warning("Nominatim Geocoding failed for {$location}: " . $e->getMessage());
         }
         return null;
     }
@@ -243,18 +304,27 @@ class TripController extends Controller
                         if (isset($dayData['activities'])) {
                             foreach ($dayData['activities'] as $activityData) {
                                 
-                                // Get Real Coordinates using Nominatim
+                                // Get Real Place Data (TripAdvisor -> Nominatim Fallback)
                                 $coords = null;
+                                $verifiedName = null;
+                                
                                 if (!empty($activityData['location'])) {
-                                    $coords = $this->getRealCoordinates($activityData['location'], $destination);
-                                    // Be nice to the API
-                                    usleep(200000); // 0.2s pause
+                                    $placeData = $this->getRealCoordinates($activityData['location'], $destination);
+                                    if ($placeData) {
+                                        $coords = $placeData;
+                                        // If TripAdvisor gave us a specific name, use it to improve data quality
+                                        if (!empty($placeData['name'])) {
+                                            $verifiedName = $placeData['name'];
+                                        }
+                                    }
+                                    // Rate Limiting protection
+                                    usleep(100000); // 0.1s
                                 }
 
                                 $dayPlan->activities()->create([
                                     'time_of_day' => $activityData['time'] ?? 'Anytime',
                                     'description' => $activityData['description'] ?? '',
-                                    'location' => $activityData['location'] ?? null,
+                                    'location' => $verifiedName ?? ($activityData['location'] ?? null),
                                     'latitude' => $coords ? $coords['lat'] : ($activityData['latitude'] ?? null),
                                     'longitude' => $coords ? $coords['lon'] : ($activityData['longitude'] ?? null),
                                 ]);
