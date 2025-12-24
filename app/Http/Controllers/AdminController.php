@@ -29,11 +29,13 @@ class AdminController extends Controller
     // --- User Management ---
     public function getUsers()
     {
+        $this->authorize('viewAny', User::class);
         return response()->json(User::latest()->get());
     }
 
     public function createUser(Request $request)
     {
+        $this->authorize('create', User::class);
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
@@ -54,6 +56,7 @@ class AdminController extends Controller
     public function updateUser(Request $request, $id)
     {
         $user = User::findOrFail($id);
+        $this->authorize('update', $user);
 
         $validated = $request->validate([
             'name' => 'sometimes|string|max:255',
@@ -73,6 +76,7 @@ class AdminController extends Controller
     public function deleteUser($id)
     {
         $user = User::findOrFail($id);
+        $this->authorize('delete', $user);
         $user->delete();
         return response()->json(['message' => 'User deleted successfully']);
     }

@@ -9,20 +9,18 @@ use Illuminate\Support\Facades\Auth;
 
 class AuthController extends Controller
 {
-    public function register(Request $request)
+    public function register(\App\Http\Requests\RegisterRequest $request)
     {
-        $validatedData = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users',
-            'password' => 'required|string|min:8',
-            
-        ]);
+        $validatedData = $request->validated();
 
         $user = User::create([
             'name' => $validatedData['name'],
             'email' => $validatedData['email'],
             'password' => Hash::make($validatedData['password']),
         ]);
+
+        // Dispatch UserRegistered event
+        \App\Events\UserRegistered::dispatch($user);
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
@@ -33,7 +31,7 @@ class AuthController extends Controller
         ]);
     }
 
-    public function login(Request $request)
+    public function login(\App\Http\Requests\LoginRequest $request)
     {
         if (!Auth::attempt($request->only('email', 'password'))) {
             return response()->json([

@@ -38,18 +38,15 @@ class TripController extends Controller
 
     public function show(Request $request, $id)
     {
-        $user = $request->user();
-
-        if ($user->role === 'admin') {
-            return \App\Models\Trip::with('dayPlans.activities')->findOrFail($id);
-        }
-
-        return $user->trips()->with('dayPlans.activities')->findOrFail($id);
+        $trip = \App\Models\Trip::with('dayPlans.activities')->findOrFail($id);
+        $this->authorize('view', $trip);
+        return $trip;
     }
 
     public function update(Request $request, $id)
     {
-        $trip = $request->user()->trips()->findOrFail($id);
+        $trip = \App\Models\Trip::findOrFail($id);
+        $this->authorize('update', $trip);
         
         $validated = $request->validate([
             'trip_title' => 'sometimes|string',
@@ -64,7 +61,8 @@ class TripController extends Controller
 
     public function destroy(Request $request, $id)
     {
-        $trip = $request->user()->trips()->findOrFail($id);
+        $trip = \App\Models\Trip::findOrFail($id);
+        $this->authorize('delete', $trip);
         $trip->delete();
 
         return response()->json(['message' => 'Trip deleted successfully']);
@@ -159,18 +157,13 @@ class TripController extends Controller
         return null;
     }
 
-    public function generatePlan(Request $request)
+    public function generatePlan(\App\Http\Requests\GeneratePlanRequest $request)
     {
-        $request->validate([
-            'destination' => 'required|string',
-            'duration' => 'required|integer',
-            'budget' => 'required|string',
-            'interests' => 'nullable|string',
-        ]);
+        $validated = $request->validated();
 
-        $destination = $request->input('destination');
-        $duration = $request->input('duration');
-        $budget = $request->input('budget');
+        $destination = $validated['destination'];
+        $duration = $validated['duration'];
+        $budget = $validated['budget'];
         $interests = $request->input('interests', 'General sightseeing');
 
         $prompt = "Act as an expert travel planner with access to TripAdvisor ratings and Viator inventory. Create a detailed {$duration}-day trip itinerary for {$destination} with a {$budget} budget.
@@ -201,7 +194,9 @@ class TripController extends Controller
             ]
         }
         
-        IMPORTANT: Do not include markdown formatting. Return raw JSON only.";
+        IMPORTANT: 
+        - YOU MUST GENERATE EXACTLY {$duration} DAYS. Do not generate fewer days.
+        - Do not include markdown formatting. Return raw JSON only.";
 
         $maxRetries = 3;
         $attempt = 0;
