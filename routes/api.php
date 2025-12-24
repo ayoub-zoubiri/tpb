@@ -51,6 +51,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Public Routes
+Route::get('/cities/search', [\App\Http\Controllers\CityController::class, 'search']);
 Route::post('/plan', [\App\Http\Controllers\TripController::class, 'generatePlan']); // Can be public or protected
 Route::get('/blog', [\App\Http\Controllers\BlogController::class, 'index']);
 Route::get('/blogs/{id}', [\App\Http\Controllers\BlogController::class, 'show']);

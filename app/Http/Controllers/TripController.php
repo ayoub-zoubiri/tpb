@@ -125,16 +125,20 @@ class TripController extends Controller
     }
 
     private function getRealCoordinates($location, $destination) {
+        // Clean up location string (remove parentheses details like "New Medina" or descriptions)
+        $cleanLocation = preg_replace('/\s*\(.*?\)\s*/', '', $location);
+        $cleanLocation = trim($cleanLocation);
+
         // Try TripAdvisor First (It's the requested "Real Place" source)
-        $taData = $this->getTripAdvisorData("{$location} in {$destination}");
+        $taData = $this->getTripAdvisorData("{$cleanLocation} in {$destination}");
         
         if ($taData && $taData['lat'] && $taData['lon']) {
             return $taData; // Returns ['lat', 'lon', 'name', ...]
         }
 
-        // Fallback to Nominatim (OpenStreetMap) if TripAdvisor fails or has no coords
+        // Fallback to Nominatim (OpenStreetMap)
         try {
-            $query = urlencode("{$location}, {$destination}");
+            $query = urlencode("{$cleanLocation}, {$destination}");
             $url = "https://nominatim.openstreetmap.org/search?q={$query}&format=json&limit=1";
 
             $response = Http::withHeaders([
@@ -289,6 +293,15 @@ class TripController extends Controller
                     'summary' => $tripData['summary'] ?? '',
                 ]);
 
+                // Fetch City Center Coordinates for Fallback
+                $cityCenter = \App\Models\City::where('city_ascii', $destination)
+                                ->orWhere('city', $destination)
+                                ->orderBy('population', 'desc')
+                                ->first();
+
+                $defaultLat = $cityCenter ? $cityCenter->lat : 0;
+                $defaultLng = $cityCenter ? $cityCenter->lng : 0;
+
                 if (isset($tripData['days'])) {
                     foreach ($tripData['days'] as $dayData) {
                         $dayPlan = $trip->dayPlans()->create([
@@ -297,7 +310,7 @@ class TripController extends Controller
                         ]);
 
                         if (isset($dayData['activities'])) {
-                            foreach ($dayData['activities'] as $activityData) {
+                            foreach ($dayData['activities'] as $index => $activityData) {
                                 
                                 // Get Real Place Data (TripAdvisor -> Nominatim Fallback)
                                 $coords = null;
@@ -316,12 +329,25 @@ class TripController extends Controller
                                     usleep(100000); // 0.1s
                                 }
 
+                                // Fallback Logic: Use City Center + Random Offset if geocoding failed
+                                $finalLat = $coords ? $coords['lat'] : ($activityData['latitude'] ?? null);
+                                $finalLng = $coords ? $coords['lon'] : ($activityData['longitude'] ?? null);
+
+                                if ((!$finalLat || !$finalLng) && $defaultLat != 0) {
+                                  // Add small random offset so they don't stack perfectly (approx 500m-1km radius)
+                                  $offsetLat = (mt_rand(-100, 100) / 10000) * 1.5; 
+                                  $offsetLng = (mt_rand(-100, 100) / 10000) * 1.5;
+                                  
+                                  $finalLat = $defaultLat + $offsetLat;
+                                  $finalLng = $defaultLng + $offsetLng;
+                                }
+
                                 $dayPlan->activities()->create([
                                     'time_of_day' => $activityData['time'] ?? 'Anytime',
                                     'description' => $activityData['description'] ?? '',
                                     'location' => $verifiedName ?? ($activityData['location'] ?? null),
-                                    'latitude' => $coords ? $coords['lat'] : ($activityData['latitude'] ?? null),
-                                    'longitude' => $coords ? $coords['lon'] : ($activityData['longitude'] ?? null),
+                                    'latitude' => $finalLat,
+                                    'longitude' => $finalLng,
                                 ]);
                             }
                         }
