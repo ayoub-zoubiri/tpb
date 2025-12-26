@@ -16,6 +16,10 @@ class Activity extends Model
         'location',
         'latitude',
         'longitude',
+        'booking_url',
+        'activity_price',
+        'activity_rating',
+        'activity_image_url',
     ];
 
     public function dayPlan()

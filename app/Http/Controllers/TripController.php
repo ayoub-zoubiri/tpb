@@ -48,7 +48,7 @@ class TripController extends Controller
     }
 
     private function getTripAdvisorData($query) {
-        $apiKey = env('TRIPADVISOR_API_KEY', '83702C78952B4CA2B80D94F58C4A905C'); 
+        $apiKey = env('TRIPADVISOR_API_KEY'); 
         if (!$apiKey) return null;
 
         try {
@@ -64,37 +64,46 @@ class TripController extends Controller
             if ($response->successful()) {
                 $data = $response->json();
                 if (!empty($data['data'])) {
-                    // Get the first (best) match
                     $place = $data['data'][0];
-                    
-                    // We might need to fetch details to get lat/long if not in search response
-                    // Note: Basic Search often creates minimal data. 
-                    // Let's assume we proceed if we have an ID, but for lat/long we might need a second call 
-                    // OR we accept just the name verification and use Nominatim for coords if TA lacks them.
-                    
-                    // Actually, let's use the 'details' endpoint if we have an ID to be sure, 
-                    // but to save API calls (limit), let's check what search returns. 
-                    // Search usually doesn't return lat/long in the list in v1. 
-                    // So we do: Search -> Get ID -> Get Details (for Geoloc).
-                    
                     $locationId = $place['location_id'];
+                    
+                    // 1. Get Details (Rating, Web URL)
                     $detailsResponse = Http::withHeaders(['accept' => 'application/json'])
                         ->get("https://api.content.tripadvisor.com/api/v1/location/{$locationId}/details", [
                             'key' => $apiKey,
                             'language' => 'en',
                             'currency' => 'USD'
                         ]);
-                        
+
+                    $details = [];
                     if ($detailsResponse->successful()) {
                         $details = $detailsResponse->json();
-                        return [
-                            'name' => $details['name'] ?? $place['name'],
-                            'lat' => $details['latitude'] ?? null,
-                            'lon' => $details['longitude'] ?? null,
-                            'rating' => $details['rating'] ?? null,
-                            'url' => $details['web_url'] ?? null
-                        ];
                     }
+
+                    // 2. Get Photos
+                    $imageUrl = null;
+                    $photosResponse = Http::withHeaders(['accept' => 'application/json'])
+                        ->get("https://api.content.tripadvisor.com/api/v1/location/{$locationId}/photos", [
+                            'key' => $apiKey,
+                            'language' => 'en',
+                            'limit' => 1
+                        ]);
+                    
+                    if ($photosResponse->successful()) {
+                        $photos = $photosResponse->json();
+                        if (!empty($photos['data'])) {
+                            $imageUrl = $photos['data'][0]['images']['large']['url'] ?? $photos['data'][0]['images']['original']['url'] ?? null;
+                        }
+                    }
+
+                    return [
+                        'name' => $details['name'] ?? $place['name'],
+                        'lat' => $details['latitude'] ?? ($place['address_obj']['lat'] ?? null), //Fallback if needed
+                        'lon' => $details['longitude'] ?? ($place['address_obj']['lng'] ?? null),
+                        'rating' => $details['rating'] ?? null,
+                        'url' => $details['web_url'] ?? null,
+                        'image' => $imageUrl
+                    ];
                 }
             }
         } catch (\Exception $e) {
@@ -104,18 +113,17 @@ class TripController extends Controller
     }
 
     private function getRealCoordinates($location, $destination) {
-        // Clean up location string (remove parentheses details like "New Medina" or descriptions)
+        
         $cleanLocation = preg_replace('/\s*\(.*?\)\s*/', '', $location);
         $cleanLocation = trim($cleanLocation);
 
-        // Try TripAdvisor First (It's the requested "Real Place" source)
+        // This already returns the full TripAdvisor data array structure we defined above
         $taData = $this->getTripAdvisorData("{$cleanLocation} in {$destination}");
         
         if ($taData && $taData['lat'] && $taData['lon']) {
-            return $taData; // Returns ['lat', 'lon', 'name', ...]
+            return $taData; 
         }
 
-        // Fallback to Nominatim (OpenStreetMap)
         try {
             $query = urlencode("{$cleanLocation}, {$destination}");
             $url = "https://nominatim.openstreetmap.org/search?q={$query}&format=json&limit=1";
@@ -130,7 +138,10 @@ class TripController extends Controller
                     return [
                         'lat' => $data[0]['lat'],
                         'lon' => $data[0]['lon'],
-                        'name' => null // Keep original name if using fallback
+                        'name' => null,
+                        'rating' => null,
+                        'url' => null,
+                        'image' => null
                     ];
                 }
             }
@@ -140,8 +151,13 @@ class TripController extends Controller
         return null;
     }
 
+
+
     public function generatePlan(\App\Http\Requests\GeneratePlanRequest $request)
     {
+        // Increase execution time to 5 minutes to handle multiple API calls
+        set_time_limit(300);
+        
         $validated = $request->validated();
 
         $destination = $validated['destination'];
@@ -149,14 +165,15 @@ class TripController extends Controller
         $budget = $validated['budget'];
         $interests = $request->input('interests', 'General sightseeing');
 
-        $prompt = "Act as an expert travel planner with access to TripAdvisor ratings and Viator inventory. Create a detailed {$duration}-day trip itinerary for {$destination} with a {$budget} budget.
+        $prompt = "Act as an expert travel planner with access to TripAdvisor ratings. Create a detailed {$duration}-day trip itinerary for {$destination} with a {$budget} budget.
         The traveler is interested in: {$interests}.
 
         CRITICAL INSTRUCTIONS FOR LOGIC & QUALITY:
         1.  **Trajectory Logic:** Arrange activities in a logical geographical order (Morning -> Afternoon -> Evening) to minimize travel time. Treat each day as a connected route.
         2.  **Cluster by Neighborhood:** Group activities by neighborhood (e.g., Morning in Area A, Afternoon in Area A or B). Avoid zig-zagging across the city.
-        3.  **Quality Recommendations:** Prioritize activities that are **Top-Rated on TripAdvisor** and usually **bookable on Viator**.
-        4.  **Real Locations:** Ensure every location is a real, specific place.
+        3.  **Quality Recommendations:** Prioritize activities that are **Top-Rated on TripAdvisor**.
+        4.  **Real Locations:** Ensure every location is a real place listed on TripAdvisor.
+        5.  **Unique Experiences:** Never repeat the same location or activity. Each recommended activity must be unique across the entire trip.
 
         Generate the response strictly in JSON format with the following structure:
         {
@@ -264,6 +281,19 @@ class TripController extends Controller
                 $defaultLat = $cityCenter ? $cityCenter->lat : 0;
                 $defaultLng = $cityCenter ? $cityCenter->lng : 0;
 
+                // Fetch a generic Fallback Image for the Destination (City)
+                $fallbackImage = null;
+                try {
+                    $destinationData = $this->getTripAdvisorData($destination);
+                    if ($destinationData && !empty($destinationData['image'])) {
+                        $fallbackImage = $destinationData['image'];
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Failed to fetch fallback city image: " . $e->getMessage());
+                }
+
+                $usedLocations = [];
+
                 if (isset($tripData['days'])) {
                     foreach ($tripData['days'] as $dayData) {
                         $dayPlan = $trip->dayPlans()->create([
@@ -280,15 +310,27 @@ class TripController extends Controller
                                 
                                 if (!empty($activityData['location'])) {
                                     $placeData = $this->getRealCoordinates($activityData['location'], $destination);
-                                    if ($placeData) {
-                                        $coords = $placeData;
-                                        // If TripAdvisor gave us a specific name, use it to improve data quality
-                                        if (!empty($placeData['name'])) {
-                                            $verifiedName = $placeData['name'];
-                                        }
+                                    
+                                    // STRICT CHECK: Must be a valid TripAdvisor location (must have URL)
+                                    if (empty($placeData) || empty($placeData['url'])) {
+                                        continue; 
                                     }
-                                    // Rate Limiting protection
-                                    usleep(100000); // 0.1s
+
+                                    $coords = $placeData;
+                                    // If TripAdvisor gave us a specific name, use it to improve data quality
+                                    if (!empty($placeData['name'])) {
+                                        $verifiedName = $placeData['name'];
+                                    }
+                                }
+
+                                // Deduplicate Locations
+                                $locationName = $verifiedName ?? ($activityData['location'] ?? null);
+                                if ($locationName) {
+                                    $normalizedLoc = strtolower(trim($locationName));
+                                    if (in_array($normalizedLoc, $usedLocations)) {
+                                        continue; // Skip duplicate activity
+                                    }
+                                    $usedLocations[] = $normalizedLoc;
                                 }
 
                                 // Fallback Logic: Use City Center + Random Offset if geocoding failed
@@ -303,13 +345,19 @@ class TripController extends Controller
                                   $finalLat = $defaultLat + $offsetLat;
                                   $finalLng = $defaultLng + $offsetLng;
                                 }
+                                
+                                // Determine final image: specific location image -> city fallback image -> null
+                                $finalImage = $coords['image'] ?? $fallbackImage;
 
                                 $dayPlan->activities()->create([
                                     'time_of_day' => $activityData['time'] ?? 'Anytime',
                                     'description' => $activityData['description'] ?? '',
-                                    'location' => $verifiedName ?? ($activityData['location'] ?? null),
+                                    'location' => $locationName,
                                     'latitude' => $finalLat,
                                     'longitude' => $finalLng,
+                                    'booking_url' => $coords['url'] ?? null,
+                                    'activity_rating' => $coords['rating'] ?? null,
+                                    'activity_image_url' => $finalImage,
                                 ]);
                             }
                         }
