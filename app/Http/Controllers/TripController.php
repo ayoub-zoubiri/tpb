@@ -8,28 +8,7 @@ use Illuminate\Support\Facades\Log;
 
 class TripController extends Controller
 {
-    private $models = [
-        
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-        
-    ];
 
-    private function getApiKeys()
-    {
-        // List of API keys. 
-        // Ideally, these should be loaded from config/env.
-        // We start with the provided key and allow for expansion.
-        $keys = [
-            env('GEMINI_API_KEY'),
-            // 'AIzaSy...', // Add API Key 2
-            // 'AIzaSy...', // Add API Key 3
-            // ...
-        ];
-        
-        // Filter out empty keys just in case
-        return array_filter($keys);
-    }
 
     public function index(Request $request)
     {
@@ -206,30 +185,13 @@ class TripController extends Controller
         $attempt = 0;
         $tripData = null;
 
-        // Rotation Logic
-        $requestCount = \Illuminate\Support\Facades\Cache::increment('gemini_request_count');
-        $i = $requestCount - 1; // 0-indexed
+        // Single Model and Key Logic
+        $selectedModel = 'gemini-2.5-flash-lite';
+        $apiKey = env('GEMINI_API_KEY');
 
-        $models = $this->models;
-        $apiKeys = array_values($this->getApiKeys()); // Ensure indexed array
-
-        if (empty($apiKeys)) {
-            return response()->json(['error' => 'No API keys configured'], 500);
+        if (!$apiKey) {
+            return response()->json(['error' => 'API key is not configured'], 500);
         }
-
-        $numModels = count($models);
-        $numKeys = count($apiKeys);
-
-        // Model rotates every request: 0, 1, 2, 3, 0, ...
-        $modelIndex = $i % $numModels;
-        
-        // API Key rotates after every full cycle of models: 
-        // Requests 0-3 use Key 0
-        // Requests 4-7 use Key 1
-        $apiKeyIndex = floor($i / $numModels) % $numKeys;
-
-        $selectedModel = $models[$modelIndex];
-        $apiKey = $apiKeys[$apiKeyIndex];
 
         while ($attempt < $maxRetries && !$tripData) {
             $attempt++;
